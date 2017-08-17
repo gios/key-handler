@@ -1,5 +1,7 @@
 package main
 
+// go build -ldflags "-H windowsgui" main.go
+
 import (
 	"bytes"
 	"io/ioutil"
